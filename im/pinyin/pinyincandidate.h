@@ -155,13 +155,15 @@ public:
 
 class ForgetCandidateWord : public CandidateWord {
 public:
-    ForgetCandidateWord(PinyinEngine *engine, Text text, size_t index);
+    ForgetCandidateWord(PinyinEngine *engine, Text text, size_t index,
+                        bool halveHistory);
 
     void select(InputContext *inputContext) const override;
 
 private:
     PinyinEngine *engine_;
     size_t index_;
+    bool halveHistory_;
 };
 
 class LuaCandidateWord : public CandidateWord {

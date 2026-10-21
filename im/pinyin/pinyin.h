@@ -225,9 +225,14 @@ FCITX_CONFIGURATION(
                                   SwitchInputMethodBehavior::CommitPreedit};
     KeyListOption forgetWord{this,
                              "ForgetWord",
-                             _("Forget word"),
+                             _("Delete word"),
                              {Key("Control+7")},
                              KeyListConstrain()};
+    KeyListOption halveHistory{this,
+                               "HalveHistory",
+                               _("Halve word learning history"),
+                               {Key("Control+Alt+7")},
+                               KeyListConstrain()};
     KeyListOption prevPage{
         this,
         "PrevPage",
@@ -370,6 +375,7 @@ public:
 
     // Forget candidate
     std::shared_ptr<CandidateList> forgetCandidateList_;
+    bool halveHistory_ = false;
 
     std::unique_ptr<EventSourceTime> cancelLastEvent_;
 
@@ -425,7 +431,8 @@ public:
 
     void resetStroke(InputContext *inputContext) const;
     void resetForgetCandidate(InputContext *inputContext) const;
-    void forgetCandidate(InputContext *inputContext, size_t index);
+    void forgetCandidate(InputContext *inputContext, size_t index,
+                         bool halveHistory = false);
     void pinCustomPhrase(InputContext *inputContext,
                          const std::string &customPhrase);
     void deleteCustomPhrase(InputContext *inputContext,
@@ -482,6 +489,8 @@ private:
     void loadDict(const std::string &fullPath,
                   std::list<std::unique_ptr<TaskToken>> &taskTokens);
     void saveCustomPhrase();
+    void loadDeletedWords();
+    bool saveDeletedWords();
 
     Instance *instance_;
     PinyinEngineConfig config_;

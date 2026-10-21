@@ -204,13 +204,13 @@ size_t FilteredForgettableCandidate::candidateIndex() const {
 }
 
 ForgetCandidateWord::ForgetCandidateWord(PinyinEngine *engine, Text text,
-                                         size_t index)
-    : engine_(engine), index_(index) {
+                                         size_t index, bool halveHistory)
+    : engine_(engine), index_(index), halveHistory_(halveHistory) {
     setText(std::move(text));
 }
 
 void ForgetCandidateWord::select(InputContext *inputContext) const {
-    engine_->forgetCandidate(inputContext, index_);
+    engine_->forgetCandidate(inputContext, index_, halveHistory_);
 }
 
 LuaCandidateWord::LuaCandidateWord(PinyinEngine *engine, size_t selectLength,
@@ -352,7 +352,12 @@ void CustomCloudPinyinCandidateWord::select(InputContext *inputContext) const {
     CloudPinyinCandidateWord::select(inputContext);
 }
 
-enum { PINYIN_FORGET, PINYIN_CUSTOMPHRASE, PINYIN_DELETE_CUSTOMPHRASE };
+enum {
+    PINYIN_FORGET,
+    PINYIN_CUSTOMPHRASE,
+    PINYIN_DELETE_CUSTOMPHRASE,
+    PINYIN_HALVE_HISTORY
+};
 
 PinyinActionableCandidateList::PinyinActionableCandidateList(
     PinyinEngine *engine, InputContext *inputContext)
@@ -369,8 +374,12 @@ std::vector<CandidateAction> PinyinActionableCandidateList::candidateActions(
     if (isForgettable(candidate)) {
         CandidateAction action;
         action.setId(PINYIN_FORGET);
-        action.setText(_("Forget candidate"));
+        action.setText(_("Delete candidate"));
         result.push_back(std::move(action));
+        CandidateAction halveAction;
+        halveAction.setId(PINYIN_HALVE_HISTORY);
+        halveAction.setText(_("Halve word learning history"));
+        result.push_back(std::move(halveAction));
     }
     // If it's not custom phrase, or order is not at the top.
     const auto *customPhrase =
@@ -395,12 +404,14 @@ std::vector<CandidateAction> PinyinActionableCandidateList::candidateActions(
 void PinyinActionableCandidateList::triggerAction(
     const CandidateWord &candidate, int id) {
     switch (id) {
-    case PINYIN_FORGET: {
+    case PINYIN_FORGET:
+    case PINYIN_HALVE_HISTORY: {
         if (const auto *pinyinCandidate =
                 dynamic_cast<const ForgettableCandidateInterface *>(
                     &candidate)) {
             engine_->forgetCandidate(inputContext_,
-                                     pinyinCandidate->candidateIndex());
+                                     pinyinCandidate->candidateIndex(),
+                                     id == PINYIN_HALVE_HISTORY);
         }
     } break;
     case PINYIN_CUSTOMPHRASE: {

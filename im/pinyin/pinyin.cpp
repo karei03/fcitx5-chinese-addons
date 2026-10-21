@@ -424,7 +424,11 @@ void PinyinEngine::updateUI(InputContext *inputContext) {
         auto sentence = context.sentence();
         if (!inputContext->capabilityFlags().testAny(
                 CapabilityFlag::PasswordOrSensitive)) {
+            const auto revision = ime_->dict()->blockedWordsRevision();
             state->context_.learn();
+            if (revision != ime_->dict()->blockedWordsRevision()) {
+                saveDeletedWords();
+            }
         }
         inputContext->commitString(sentence);
         inputContext->updatePreedit();
@@ -755,6 +759,7 @@ PinyinEngine::PinyinEngine(Instance *instance)
         }
     } while (0);
 
+    loadDeletedWords();
     ime_->setScoreFilter(1);
     loadBuiltInDict();
     reloadConfig();
@@ -1508,7 +1513,9 @@ void PinyinEngine::updateForgetCandidate(InputContext *inputContext) {
     inputPanel.reset();
 
     updatePreedit(inputContext);
-    Text aux(_("[Select the word to remove from history]"));
+    Text aux(state->halveHistory_
+                 ? _("[Select the word whose learning history will be halved]")
+                 : _("[Select the word to delete from candidates]"));
     inputPanel.setAuxUp(aux);
 
     auto candidateList = std::make_unique<CommonCandidateList>();
@@ -1531,7 +1538,8 @@ void PinyinEngine::updateForgetCandidate(InputContext *inputContext) {
             }
 
             candidateList->append<ForgetCandidateWord>(
-                this, pyCandidate->text(), pyCandidate->idx_);
+                this, pyCandidate->text(), pyCandidate->idx_,
+                state->halveHistory_);
         }
     }
     candidateList->setSelectionKey(selectionKeys_);
@@ -1555,33 +1563,89 @@ void PinyinEngine::resetStroke(InputContext *inputContext) const {
 void PinyinEngine::resetForgetCandidate(InputContext *inputContext) const {
     auto *state = inputContext->propertyFor(&factory_);
     state->forgetCandidateList_.reset();
+    state->halveHistory_ = false;
     if (state->mode_ == PinyinMode::ForgetCandidate) {
         state->mode_ = PinyinMode::Normal;
     }
 }
 
-void PinyinEngine::forgetCandidate(InputContext *inputContext, size_t index) {
+void PinyinEngine::forgetCandidate(InputContext *inputContext, size_t index,
+                                   bool halveHistory) {
     auto *state = inputContext->propertyFor(&factory_);
 
     const std::string currentInput = state->context_.userInput();
 
     if (index < state->context_.candidatesToCursor().size()) {
-        const auto &sentence = state->context_.candidatesToCursor()[index];
-        // If this is a word, remove it from user dict.
-        if (sentence.size() == 1) {
-            auto py = state->context_.candidateFullPinyin(index);
-            state->context_.ime()->dict()->removeWord(
-                libime::PinyinDictionary::UserDict, py, sentence.toString());
+        const auto &candidate = state->context_.candidatesToCursor()[index];
+        // Copy before dictionary mutations invalidate matching caches.
+        const auto text = candidate.toString();
+        const auto code = getEncodedPinyin(candidate);
+        const auto pinyin = state->context_.candidateFullPinyin(candidate);
+        if (code.empty() || pinyin.empty()) {
+            return;
         }
-        for (const auto &word : sentence.sentence()) {
-            state->context_.ime()->model()->history().forget(word->word());
+        if (halveHistory) {
+            // Preserve the cumulative-history policy for constituent words.
+            std::unordered_set<std::string> forgotten;
+            for (const auto &word : candidate.sentence()) {
+                if (forgotten.insert(word->word()).second) {
+                    ime_->model()->history().forget(word->word());
+                }
+            }
+        } else {
+            // Delete the selected identity, never its individual characters.
+            // A per-user exclusion also covers read-only built-in dictionaries.
+            ime_->dict()->setWordBlocked(code, text, true);
+            ime_->dict()->removeWord(libime::PinyinDictionary::UserDict, pinyin,
+                                     text);
+            ime_->model()->history().remove(text, code);
         }
+        save();
     }
     resetForgetCandidate(inputContext);
     doReset(inputContext);
 
     state->context_.type(currentInput);
     updateUI(inputContext);
+}
+
+void PinyinEngine::loadDeletedWords() {
+    RawConfig data;
+    readAsIni(data, StandardPathsType::PkgData, "pinyin/deleted-words.conf");
+    data.visitSubItems([this](const RawConfig &entry, const std::string &) {
+        const auto pinyinEntry = entry.get("Pinyin");
+        const auto word = entry.get("Word");
+        if (!pinyinEntry || !word) {
+            return true;
+        }
+        try {
+            const auto encoded =
+                libime::PinyinEncoder::encodeFullPinyinWithFlags(
+                    pinyinEntry->value(), libime::PinyinFuzzyFlag::VE_UE);
+            ime_->dict()->setWordBlocked(
+                std::string_view(encoded.data(), encoded.size()), word->value(),
+                true);
+        } catch (const std::exception &e) {
+            PINYIN_ERROR() << "Invalid deleted pinyin word: " << e.what();
+        }
+        return true;
+    });
+}
+
+bool PinyinEngine::saveDeletedWords() {
+    RawConfig data;
+    size_t index = 0;
+    for (const auto &[code, word] : ime_->dict()->blockedWords()) {
+        auto &entry = data[std::to_string(index++)];
+        entry["Pinyin"].setValue(libime::PinyinEncoder::decodeFullPinyin(code));
+        entry["Word"].setValue(word);
+    }
+    const bool saved = safeSaveAsIni(data, StandardPathsType::PkgData,
+                                     "pinyin/deleted-words.conf");
+    if (!saved) {
+        PINYIN_ERROR() << "Failed to save deleted pinyin words";
+    }
+    return saved;
 }
 
 void PinyinEngine::saveCustomPhrase() {
@@ -1732,8 +1796,12 @@ bool PinyinEngine::handleForgetCandidate(KeyEvent &event) {
     if (state->mode_ == PinyinMode::Normal) {
         if (!state->predictWords_ && candidateList && !candidateList->empty() &&
             candidateList->toBulk() &&
-            event.key().checkKeyList(*config_.forgetWord)) {
+            (event.key().checkKeyList(*config_.forgetWord) ||
+             event.key().checkKeyList(*config_.halveHistory))) {
             resetForgetCandidate(inputContext);
+            state->halveHistory_ =
+                !event.key().checkKeyList(*config_.forgetWord) &&
+                event.key().checkKeyList(*config_.halveHistory);
             state->forgetCandidateList_ = std::move(candidateList);
             state->mode_ = PinyinMode::ForgetCandidate;
             updateForgetCandidate(inputContext);
@@ -2222,6 +2290,8 @@ void PinyinEngine::setSubConfig(const std::string &path,
     } else if (path == "clearalldict") {
         ime_->dict()->clear(libime::PinyinDictionary::UserDict);
         ime_->model()->history().clear();
+        ime_->dict()->clearBlockedWords();
+        saveDeletedWords();
     } else if (path == "customphrase") {
         loadCustomPhrase();
     }
@@ -2253,6 +2323,7 @@ void PinyinEngine::doReset(InputContext *inputContext) const {
 
 void PinyinEngine::save() {
     safeSaveAsIni(config_, "conf/pinyin.conf");
+    saveDeletedWords();
     const auto &standardPath = StandardPaths::global();
     standardPath.safeSave(
         StandardPathsType::PkgData, "pinyin/user.dict", [this](int fd) {
