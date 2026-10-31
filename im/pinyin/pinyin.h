@@ -37,8 +37,8 @@
 #include <fcitx/inputmethodengine.h>
 #include <fcitx/instance.h>
 #include <fcitx/text.h>
-#include <filesystem>
 #include <future>
+#include <libime/core/historybigram.h>
 #include <libime/pinyin/pinyincontext.h>
 #include <libime/pinyin/pinyinime.h>
 #include <libime/pinyin/pinyinprediction.h>
@@ -85,13 +85,22 @@ FCITX_CONFIG_ENUM_NAME_WITH_I18N(SwitchInputMethodBehavior, N_("Clear"),
                                  N_("Commit current preedit"),
                                  N_("Commit default selection"))
 
-FCITX_CONFIG_ENUM(ShuangpinProfileEnum, Ziranma, MS, Ziguang, ABC,
-                  Zhongwenzhixing, PinyinJiajia, Xiaohe, Custom)
+enum class ShuangpinProfileEnum {
+    Ziranma,
+    MS,
+    Ziguang,
+    ABC,
+    Zhongwenzhixing,
+    PinyinJiajia,
+    Xiaohe,
+    GB,
+    Custom
+};
 
-FCITX_CONFIG_ENUM_I18N_ANNOTATION(ShuangpinProfileEnum, N_("Ziranma"), N_("MS"),
-                                  N_("Ziguang"), N_("ABC"),
-                                  N_("Zhongwenzhixing"), N_("PinyinJiajia"),
-                                  N_("Xiaohe"), N_("Custom"))
+FCITX_CONFIG_ENUM_NAME_WITH_I18N(ShuangpinProfileEnum, N_("Ziranma"), N_("MS"),
+                                 N_("Ziguang"), N_("ABC"),
+                                 N_("Zhongwenzhixing"), N_("PinyinJiajia"),
+                                 N_("Xiaohe"), N_("GB Standard"), N_("Custom"))
 
 enum class PreeditMode { No, ComposingPinyin, CommitPreview };
 
@@ -119,13 +128,15 @@ FCITX_CONFIG_ENUM_NAME_WITH_I18N(CorrectionLayout, N_("None"), N_("QWERTY"))
 FCITX_CONFIGURATION(
     FuzzyConfig, Option<bool> ue{this, "VE_UE", _("ue -> ve"), true};
     Option<bool> commonTypo{this, "NG_GN", _("Common Typo"), true};
+    Option<bool> lowerCaseMatchLetter{this, "LowerCaseMatchLetter",
+                                      _("Match Letter in lower case"), true};
     Option<bool> inner{this, "Inner", _("Inner Segment (xian -> xi'an)"), true};
     Option<bool> innerShort{this, "InnerShort",
                             _("Inner Segment for Short Pinyin (qie -> qi'e)"),
                             true};
     Option<bool> partialFinal{this, "PartialFinal",
                               _("Match partial finals (e -> en, eng, ei)"),
-                              true};
+                              false};
     OptionWithAnnotation<bool, OptionalHideInDescription> partialSp{
         this, "PartialSp",
         _("Match partial shuangpin if input length is longer than 4"), false};
@@ -144,8 +155,8 @@ FCITX_CONFIGURATION(
     Option<bool> z{this, "Z_ZH", _("z <-> zh"), false};
     OptionWithAnnotation<CorrectionLayout, CorrectionLayoutI18NAnnotation>
         correction{this, "Correction", _("Correction Layout"),
-                   isAndroid() ? CorrectionLayout::Qwerty
-                               : CorrectionLayout::None};)
+                   (isAndroid() || isIOS()) ? CorrectionLayout::Qwerty
+                                            : CorrectionLayout::None};)
 
 FCITX_CONFIGURATION(
     PinyinEngineConfig,
@@ -156,7 +167,7 @@ FCITX_CONFIGURATION(
                          ShuangpinProfileEnum::Ziranma};
     OptionWithAnnotation<bool, OptionalHideInDescription> showShuangpinMode{
         this, "ShowShuangpinMode", _("Show current shuangpin mode"), true};
-    Option<int, IntConstrain> pageSize{
+    ConditionalHidden<isIOS(), Option<int, IntConstrain>> pageSize{
         this, "PageSize", _("Candidates Per Page"), 7, IntConstrain(3, 10)};
     Option<bool> spellEnabled{this, "SpellEnabled",
                               _("Show English Candidates"), true};
@@ -167,7 +178,7 @@ FCITX_CONFIGURATION(
     Option<bool> extBEnabled{
         this, "ExtBEnabled",
         _("Enable more Characters after Unicode CJK Extension B"),
-        !isAndroid()};
+        !(isAndroid() || isIOS())};
     Option<bool> strokeCandidateEnabled{
         this, "StrokeCandidateEnabled",
         _("Show stroke candidates when typing with h(一), s(丨), p(丿), n(㇏), "
@@ -199,7 +210,7 @@ FCITX_CONFIGURATION(
     Option<bool> showActualPinyinInPreedit{
         this, "PinyinInPreedit", _("Show complete pinyin in preedit"), false};
     Option<bool> predictionEnabled{this, "Prediction", _("Enable Prediction"),
-                                   isAndroid()};
+                                   isAndroid() || isIOS()};
     OptionWithAnnotation<bool, ToolTipAnnotation> keepCurrentContext{
         this,
         "KeepCurrentContext",
@@ -223,6 +234,7 @@ FCITX_CONFIGURATION(
         switchInputMethodBehavior{this, "SwitchInputMethodBehavior",
                                   _("Action when switching input method"),
                                   SwitchInputMethodBehavior::CommitPreedit};
+    Option<bool> learning{this, "Learning", _("Learning"), true};
     KeyListOption forgetWord{this,
                              "ForgetWord",
                              _("Delete word"),
@@ -289,12 +301,19 @@ FCITX_CONFIGURATION(
                           KeyConstrainFlag::AllowModifierOnly})};
     Option<bool> useKeypadAsSelectionKey{
         this, "UseKeypadAsSelection", _("Use Keypad as Selection key"), false};
-    KeyListOption selectCharFromPhrase{
+    KeyListOptionWithAnnotation<ToolTipAnnotation> selectCharFromPhrase{
         this,
         "ChooseCharFromPhrase",
         _("Choose Character from Phrase"),
-        {Key("["), Key("]")},
-        KeyListConstrain({KeyConstrainFlag::AllowModifierLess})};
+        {Key("[")},
+        KeyListConstrain({KeyConstrainFlag::AllowModifierLess}),
+        {},
+        {_("N-th key in the option will select the N-th character in the "
+           "current candidate.")}};
+    Option<Key, KeyConstrain> selectLastCharFromPhrase{
+        this, "ChooseLastCharFromPhrase",
+        _("Choose Last Character from Phrase"), Key("]"),
+        KeyConstrain{KeyConstrainFlag::AllowModifierLess}};
     Option<bool> useBackSpaceToUnselect{
         this, "BackSpaceToUnselect", _("Use BackSpace to cancel the selection"),
         true};
@@ -340,17 +359,17 @@ FCITX_CONFIGURATION(
                                    _("Use V to trigger quickphrase"), true};
     ExternalOption quickphrase{this, "QuickPhrase", _("Quick Phrase"),
                                "fcitx://config/addon/quickphrase/editor"};
-    OptionWithAnnotation<std::vector<std::string>, ToolTipAnnotation>
+    Option<std::vector<std::string>, ListConstrain<RegexConstrain>,
+           DefaultMarshaller<std::vector<std::string>>, ToolTipAnnotation>
         quickphraseTriggerRegex{
-            this,
-            "QuickPhraseTriggerRegex",
-            _("Regular expression to trigger quick phrase"),
-            {".(/|@)$", "^(www|bbs|forum|mail|bbs)\\.",
-             "^(http|https|ftp|telnet|mailto):"},
-            {},
-            {},
-            {_("Enter quickphrase mode when current input matches any regular "
-               "expression from the list.")}};
+            {.parent = this,
+             .path = "QuickPhraseTriggerRegex",
+             .description = _("Regular expression to trigger quick phrase"),
+             .defaultValue = {".(/|@)$", "^(www|bbs|forum|mail)\\.",
+                              "^(http|https|ftp|telnet|mailto):"},
+             .annotation = {_("Enter quickphrase mode when current input "
+                              "matches any regular "
+                              "expression from the list.")}}};
     Option<FuzzyConfig> fuzzyConfig{this, "Fuzzy", _("Fuzzy Pinyin")};
     HiddenOption<bool> firstRun{this, "FirstRun", "FirstRun", true};)
 
@@ -358,7 +377,7 @@ struct EventSourceTime;
 class CandidateList;
 class PinyinEngine;
 
-enum class PinyinMode { Normal, StrokeFilter, ForgetCandidate, Punctuation };
+enum class PinyinMode { Normal, ForgetCandidate, Punctuation };
 
 class PinyinState : public InputContextProperty {
 public:
@@ -370,17 +389,14 @@ public:
 
     PinyinMode mode_ = PinyinMode::Normal;
 
-    // Stroke filter
-    std::shared_ptr<CandidateList> strokeCandidateList_;
-    InputBuffer strokeBuffer_;
-
     // Forget candidate
     std::shared_ptr<CandidateList> forgetCandidateList_;
     bool halveHistory_ = false;
 
     std::unique_ptr<EventSourceTime> cancelLastEvent_;
 
-    std::optional<std::vector<std::string>> predictWords_;
+    std::optional<std::vector<libime::HistoryBigram::WordWithCode>>
+        predictWords_;
 
     int keyReleased_ = -1;
     int keyReleasedIndex_ = -2;
@@ -429,8 +445,8 @@ public:
     void updatePredict(InputContext *inputContext);
 
     void updateUI(InputContext *inputContext);
+    void updateFilter(InputContext *inputContext);
 
-    void resetStroke(InputContext *inputContext) const;
     void resetForgetCandidate(InputContext *inputContext) const;
     void forgetCandidate(InputContext *inputContext, size_t index,
                          bool halveHistory = false);
@@ -440,10 +456,13 @@ public:
                             const std::string &customPhrase);
 
     FCITX_ADDON_DEPENDENCY_LOADER(cloudpinyin, instance_->addonManager());
+    FCITX_ADDON_DEPENDENCY_LOADER(pinyinhelper, instance_->addonManager());
 
     const auto &selectionKeys() const { return selectionKeys_; }
 
 private:
+    bool shouldLearn(const InputContext *inputContext) const;
+
     void cloudPinyinSelected(InputContext *inputContext,
                              const std::string &selected,
                              const std::string &word);
@@ -467,7 +486,6 @@ private:
 
     void populateConfig();
 
-    void updateStroke(InputContext *inputContext);
     void updateForgetCandidate(InputContext *inputContext);
 
     void updatePreedit(InputContext *inputContext) const;
@@ -519,7 +537,6 @@ private:
     FCITX_ADDON_DEPENDENCY_LOADER(chttrans, instance_->addonManager());
     FCITX_ADDON_DEPENDENCY_LOADER(punctuation, instance_->addonManager());
     FCITX_ADDON_DEPENDENCY_LOADER(notifications, instance_->addonManager());
-    FCITX_ADDON_DEPENDENCY_LOADER(pinyinhelper, instance_->addonManager());
     FCITX_ADDON_DEPENDENCY_LOADER(spell, instance_->addonManager());
     FCITX_ADDON_DEPENDENCY_LOADER(imeapi, instance_->addonManager());
 

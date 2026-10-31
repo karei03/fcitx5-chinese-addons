@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.6.0)
-project(fcitx5-chinese-addons VERSION 5.1.12)
+project(fcitx5-chinese-addons VERSION 5.1.15)
 
-set(REQUIRED_FCITX_VERSION 5.1.13)
-set(REQUIRED_LIBIME_VERSION 1.1.13)
+set(REQUIRED_FCITX_VERSION 5.1.22)
+set(REQUIRED_LIBIME_VERSION 1.1.14)
 
 find_package(ECM REQUIRED 1.0.0)
 set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
@@ -35,9 +35,13 @@ option(ENABLE_GUI "Enable Configure Gui" On)
 option(ENABLE_BROWSER "Enable built-in browser." On)
 option(ENABLE_CLOUDPINYIN "Build cloud pinyin addon" On)
 option(ENABLE_DATA "Build data" On)
+option(ENABLE_TOOLS "Build tools" On)
 
 if (ENABLE_OPENCC)
     find_package(OpenCC 1.0.1 REQUIRED)
+endif()
+if (ENABLE_OPENCC OR ENABLE_CLOUDPINYIN)
+    find_package(nlohmann_json 3.2 REQUIRED)
 endif()
 
 if (ENABLE_GUI)
@@ -49,17 +53,12 @@ if (ENABLE_GUI)
     endif()
 endif()
 
-# We do not need json if OpenCC is not needed, but just try to find it anyway to save some ifelse logic
-find_package(Boost 1.61 OPTIONAL_COMPONENTS json)
+find_package(Boost 1.61 REQUIRED)
 find_package(LibIMEPinyin ${REQUIRED_LIBIME_VERSION} REQUIRED)
 find_package(LibIMETable ${REQUIRED_LIBIME_VERSION} REQUIRED)
 
 if (ENABLE_CLOUDPINYIN)
     pkg_check_modules(Curl REQUIRED IMPORTED_TARGET "libcurl")
-endif()
-
-if (TARGET Boost::json)
-    set(HAS_BOOST_JSON TRUE)
 endif()
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/config.h.in ${CMAKE_CURRENT_BINARY_DIR}/config.h)
@@ -72,7 +71,10 @@ fcitx5_add_i18n_definition()
 add_subdirectory(modules)
 add_subdirectory(im)
 add_subdirectory(po)
-add_subdirectory(tools)
+
+if (ENABLE_TOOLS)
+    add_subdirectory(tools)
+endif()
 
 if (ENABLE_GUI)
     add_subdirectory(gui)

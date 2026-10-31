@@ -20,7 +20,7 @@
 #include <thread>
 #include <unistd.h>
 
-using namespace fcitx;
+namespace fcitx::cloudpinyin {
 
 FetchThread::FetchThread(CloudPinyin *cloudPinyin) : cloudPinyin_(cloudPinyin) {
     curlm_ = curl_multi_init();
@@ -91,9 +91,9 @@ void FetchThread::handleIO(int fd, IOEventFlags flags) {
 
 void FetchThread::processMessages() {
     int num_messages = 0;
-    CURLMsg *curl_message = curl_multi_info_read(curlm_, &num_messages);
 
-    while (curl_message != nullptr) {
+    while (CURLMsg *curl_message =
+               curl_multi_info_read(curlm_, &num_messages)) {
         if (curl_message->msg == CURLMSG_DONE) {
             void *p = nullptr;
             curl_easy_getinfo(curl_message->easy_handle, CURLINFO_PRIVATE, &p);
@@ -103,7 +103,6 @@ void FetchThread::processMessages() {
             queue->remove();
             finished(queue);
         }
-        curl_message = curl_multi_info_read(curlm_, &num_messages);
     }
 }
 
@@ -196,10 +195,9 @@ bool FetchThread::addRequest(const SetupRequestCallback &callback) {
             break;
         }
     }
-    if (!queue) {
+    if (!queue || !callback(queue)) {
         return false;
     }
-    callback(queue);
 
     {
         const std::lock_guard<std::mutex> lock(pendingQueueLock);
@@ -249,3 +247,5 @@ void FetchThread::run() {
     events_.clear();
     loop_.reset();
 }
+
+} // namespace fcitx::cloudpinyin
