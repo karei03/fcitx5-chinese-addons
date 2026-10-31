@@ -365,6 +365,7 @@ public:
     PinyinState(PinyinEngine *engine);
 
     libime::PinyinContext context_;
+    libime::PinyinLearningHistory learningHistory_;
     bool lastIsPunc_ = false;
 
     PinyinMode mode_ = PinyinMode::Normal;
@@ -505,6 +506,8 @@ private:
     std::unique_ptr<EventSource> deferEvent_;
     std::unique_ptr<EventSource> deferredPreload_;
     std::unique_ptr<HandlerTableEntry<EventHandler>> event_;
+    std::unique_ptr<HandlerTableEntry<EventHandler>> surroundingEvent_;
+    std::unique_ptr<HandlerTableEntry<EventHandler>> focusEvent_;
     CustomPhraseDict customPhrase_;
     SymbolDict symbols_;
     WorkerThread worker_;

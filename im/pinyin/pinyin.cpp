@@ -53,6 +53,7 @@
 #include <fcitx/inputpanel.h>
 #include <fcitx/instance.h>
 #include <fcitx/statusarea.h>
+#include <fcitx/surroundingtext.h>
 #include <fcitx/text.h>
 #include <fcitx/userinterface.h>
 #include <fcitx/userinterfacemanager.h>
@@ -218,7 +219,8 @@ std::string getEncodedPinyin(const libime::SentenceResult &result) {
 
 } // namespace
 
-PinyinState::PinyinState(PinyinEngine *engine) : context_(engine->ime()) {
+PinyinState::PinyinState(PinyinEngine *engine)
+    : context_(engine->ime()), learningHistory_(engine->ime()) {
     context_.setMaxSentenceLength(35);
 }
 
@@ -430,6 +432,8 @@ void PinyinEngine::updateUI(InputContext *inputContext) {
                 saveDeletedWords();
             }
         }
+        state->learningHistory_.committed(sentence,
+                                          state->context_.takeLearningEvents());
         inputContext->commitString(sentence);
         inputContext->updatePreedit();
         inputContext->updateUserInterface(UserInterfaceComponent::InputPanel);
@@ -818,6 +822,40 @@ PinyinEngine::PinyinEngine(Instance *instance)
             }
             handle2nd3rdSelection(keyEvent);
         });
+    surroundingEvent_ = instance_->watchEvent(
+        EventType::InputContextSurroundingTextUpdated,
+        EventWatcherPhase::PostInputMethod, [this](Event &event) {
+            auto *inputContext =
+                static_cast<InputContextEvent &>(event).inputContext();
+            const auto *entry = instance_->inputMethodEntry(inputContext);
+            if (!entry || entry->addon() != "pinyin") {
+                return;
+            }
+            auto &history =
+                inputContext->propertyFor(&factory_)->learningHistory_;
+            const auto &surrounding = inputContext->surroundingText();
+            if (!inputContext->capabilityFlags().test(
+                    CapabilityFlag::SurroundingText) ||
+                inputContext->capabilityFlags().testAny(
+                    CapabilityFlag::PasswordOrSensitive) ||
+                !surrounding.isValid()) {
+                history.invalidate();
+            } else {
+                history.update(surrounding.text(), surrounding.cursor(),
+                               surrounding.anchor());
+            }
+        });
+    focusEvent_ = instance_->watchEvent(
+        EventType::InputContextFocusOut, EventWatcherPhase::PostInputMethod,
+        [this](Event &event) {
+            auto *inputContext =
+                static_cast<InputContextEvent &>(event).inputContext();
+            const auto *entry = instance_->inputMethodEntry(inputContext);
+            if (entry && entry->addon() == "pinyin") {
+                inputContext->propertyFor(&factory_)
+                    ->learningHistory_.invalidate();
+            }
+        });
 
     pyConfig_.shuangpinProfile.annotation().setHidden(true);
     pyConfig_.showShuangpinMode.annotation().setHidden(true);
@@ -1155,6 +1193,15 @@ void PinyinEngine::activate(const fcitx::InputMethodEntry &entry,
                                          &predictionAction_);
     auto *state = inputContext->propertyFor(&factory_);
     state->context_.setUseShuangpin(entry.uniqueName() == "shuangpin");
+    state->learningHistory_.invalidate();
+    const auto &surrounding = inputContext->surroundingText();
+    if (inputContext->capabilityFlags().test(CapabilityFlag::SurroundingText) &&
+        !inputContext->capabilityFlags().testAny(
+            CapabilityFlag::PasswordOrSensitive) &&
+        surrounding.isValid()) {
+        state->learningHistory_.update(surrounding.text(), surrounding.cursor(),
+                                       surrounding.anchor());
+    }
     // TODO: use surrouding to re-build context.
     state->context_.clearContextWords();
 }
@@ -1162,6 +1209,7 @@ void PinyinEngine::activate(const fcitx::InputMethodEntry &entry,
 void PinyinEngine::deactivate(const fcitx::InputMethodEntry &entry,
                               fcitx::InputContextEvent &event) {
     auto *inputContext = event.inputContext();
+    inputContext->propertyFor(&factory_)->learningHistory_.invalidate();
     do {
         if (event.type() != EventType::InputContextSwitchInputMethod) {
             break;
@@ -1592,9 +1640,14 @@ void PinyinEngine::forgetCandidate(InputContext *inputContext, size_t index,
                     ime_->model()->history().forget(word->word());
                 }
             }
+        } else if (utf8::length(text) == 1) {
+            // A single character can lose its personal preference without
+            // disappearing from the system dictionary or being blocked.
+            ime_->model()->history().remove(text, code);
         } else {
-            // Delete the selected identity, never its individual characters.
-            // A per-user exclusion also covers read-only built-in dictionaries.
+            // Delete the selected multi-character identity, never its
+            // individual characters. A per-user exclusion also covers
+            // read-only built-in dictionaries.
             ime_->dict()->setWordBlocked(code, text, true);
             ime_->dict()->removeWord(libime::PinyinDictionary::UserDict, pinyin,
                                      text);
@@ -2025,6 +2078,14 @@ void PinyinEngine::keyEvent(const InputMethodEntry &entry, KeyEvent &event) {
     bool lastIsPunc = state->lastIsPunc_;
     state->lastIsPunc_ = false;
 
+    if (state->context_.empty() &&
+        (event.key().check(FcitxKey_BackSpace) ||
+         event.key().check(FcitxKey_Delete) ||
+         event.key().check(FcitxKey_KP_Delete) ||
+         event.key().check(FcitxKey_x, KeyState::Ctrl))) {
+        state->learningHistory_.expectDeletion();
+    }
+
     if (handleStrokeFilter(event, keyChr)) {
         return;
     }
@@ -2300,6 +2361,7 @@ void PinyinEngine::setSubConfig(const std::string &path,
 void PinyinEngine::reset(const InputMethodEntry & /*entry*/,
                          InputContextEvent &event) {
     auto *inputContext = event.inputContext();
+    inputContext->propertyFor(&factory_)->learningHistory_.invalidate();
     doReset(inputContext);
 }
 
